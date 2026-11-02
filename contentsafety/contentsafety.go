@@ -60,8 +60,18 @@ const (
 	// traversal, and suspicious downloads.
 	Malicious
 
-	// AllRules selects every family.
-	AllRules = RuleSet(^uint16(0))
+	// ActiveHTML matches markup in markdown that runs in a reader's browser
+	// when the markdown is rendered with raw HTML: script, frames, event
+	// handlers, javascript: URLs. Code spans and fenced blocks are skipped:
+	// markup shown as code is text.
+	ActiveHTML
+
+	// AllRules selects every behavioural family. ActiveHTML is not in it:
+	// it judges how a page renders markdown, not what the text tells an
+	// agent to do, and the gates that scan with AllRules (resolve, store)
+	// predate it. A caller that renders the content opts in by name.
+	AllRules = Credentials | Injection | SpecialTokens | HiddenContent |
+		Exfiltration | Destructive | MeetingSecrets | Malicious
 )
 
 // Verb records which operations a rule is precise enough to drive.
@@ -117,6 +127,9 @@ func detectInto(result *Result, path, content string, sets RuleSet) {
 	scanContentRules(result, path, content, func(r *rule) bool {
 		return r.Sets&sets != 0
 	})
+	if sets&ActiveHTML != 0 {
+		detectActiveHTML(result, path, content)
+	}
 }
 
 // Clean rewrites every CleanSafe match in sets to a placeholder and reports
