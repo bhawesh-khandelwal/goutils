@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -35,6 +36,7 @@ type ServerConnection struct {
 	conn        *websocket.Conn
 	sendChan    chan *sendOp
 	done        chan struct{}
+	closeOnce   sync.Once
 }
 
 // Ensure ServerConnection implements Connection interface
@@ -184,7 +186,6 @@ func (c *ServerConnection) extendReadDeadline() {
 	}
 }
 
-// Close closes the WebSocket connection
 // Leave tells the peer this server is going away (close code 1001), so a
 // reconnecting client moves to another instance at once, then closes.
 func (c *ServerConnection) Leave() error {
@@ -195,15 +196,16 @@ func (c *ServerConnection) Leave() error {
 	return c.Close()
 }
 
+// Close closes the WebSocket connection. Safe to call from several
+// goroutines at once (the handler, a hub and a key revocation can all close
+// the same socket); only the first call closes, the rest return nil.
 func (c *ServerConnection) Close() error {
-	select {
-	case <-c.done:
-		return nil
-	default:
+	var err error
+	c.closeOnce.Do(func() {
 		close(c.done)
 		if c.conn != nil {
-			return c.conn.Close()
+			err = c.conn.Close()
 		}
-		return nil
-	}
+	})
+	return err
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inference-sh/recws"
@@ -15,9 +16,10 @@ import (
 // ClientConnection represents a WebSocket client connection with auto-reconnect
 type ClientConnection struct {
 	BaseConnection
-	conn     *recws.RecConn
-	sendChan chan *sendOp
-	done     chan struct{}
+	conn      *recws.RecConn
+	sendChan  chan *sendOp
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // Ensure ClientConnection implements Connection interface
@@ -255,12 +257,10 @@ func (c *ClientConnection) Listen(ctx context.Context) {
 	}
 }
 
-// Close closes the WebSocket connection
+// Close closes the WebSocket connection. Safe to call concurrently; only the
+// first call closes.
 func (c *ClientConnection) Close() error {
-	select {
-	case <-c.done:
-		return nil
-	default:
+	c.closeOnce.Do(func() {
 		close(c.done)
 		// Send a proper close frame so the server sees a clean disconnect
 		// instead of a 1006 abnormal closure. Only when connected: recws writes
@@ -271,6 +271,6 @@ func (c *ClientConnection) Close() error {
 		} else {
 			c.conn.Close()
 		}
-		return nil
-	}
+	})
+	return nil
 }
