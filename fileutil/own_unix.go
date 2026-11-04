@@ -7,9 +7,9 @@ import (
 	"syscall"
 )
 
-// ownFile reports whether fi is this process's user's file and writable by
-// no one else.
-func ownFile(fi os.FileInfo) bool {
+// ownFile reports whether fi is user uid's file with none of the deny
+// permission bits.
+func ownFile(fi os.FileInfo, uid int, deny os.FileMode) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && int(st.Uid) == os.Geteuid() && fi.Mode().Perm()&0o022 == 0
+	return ok && int(st.Uid) == uid && fi.Mode().Perm()&deny == 0
 }
