@@ -423,6 +423,7 @@ var allRules = sync.OnceValue(func() []rule {
 	// stable order.
 	rules = append(rules, credentialRules()...)
 	rules = append(rules, specialTokenRules()...)
+	rules = append(rules, toolResultRules()...)
 	return rules
 })
 

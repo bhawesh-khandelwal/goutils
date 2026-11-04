@@ -54,7 +54,29 @@ func Enabled() bool { return enabled }
 // For JSON output use WrapJSON: markers injected into a serialized document
 // would make it unparseable.
 func Wrap(source, content string) string {
-	if !enabled || content == "" {
+	if !enabled {
+		return content
+	}
+	return WrapWith(source, content, Options{Notice: true})
+}
+
+// Options shape an envelope written by WrapWith or WrapJSONWith.
+type Options struct {
+	// Notice adds the security notice under the header. A service that
+	// explains the envelope once, in the system prompt, leaves it out of
+	// every result.
+	Notice bool
+	// Annotation is one line written under the header (and as "annotation"
+	// in a JSON marker): what a scanner found in the content. Line breaks
+	// are folded to spaces.
+	Annotation string
+}
+
+// WrapWith frames content as untrusted whatever the process-wide switch
+// (SetEnabled) says: for a service that decides per call. Empty content is
+// returned as it is.
+func WrapWith(source, content string, opts Options) string {
+	if content == "" {
 		return content
 	}
 	if source == "" {
@@ -66,15 +88,36 @@ func Wrap(source, content string) string {
 	body := Neutralize(content)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "<<<EXTERNAL_UNTRUSTED_CONTENT source=%q id=%s>>>\n", source, nonce)
-	b.WriteString(securityNotice)
-	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "<<<EXTERNAL_UNTRUSTED_CONTENT source=%q id=%s>>>\n", sourceLabel(source), nonce)
+	if a := annotationLine(opts.Annotation); a != "" {
+		b.WriteString(a)
+		b.WriteString("\n")
+	}
+	if opts.Notice {
+		b.WriteString(securityNotice)
+		b.WriteString("\n\n")
+	}
 	b.WriteString(body)
 	if !strings.HasSuffix(body, "\n") {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "<<<END_EXTERNAL_UNTRUSTED_CONTENT id=%s>>>", nonce)
 	return b.String()
+}
+
+// sourceLabel keeps a source name to one line without markers in it.
+func sourceLabel(source string) string {
+	return markerPattern.ReplaceAllString(strings.Join(strings.Fields(source), " "), "[REMOVED_MARKER]")
+}
+
+// annotationLine is a, on one line, neutralized: it often quotes what it
+// found.
+func annotationLine(a string) string {
+	a = strings.Join(strings.Fields(a), " ")
+	if a == "" {
+		return ""
+	}
+	return Neutralize(a)
 }
 
 // WrapJSON marks the content inside a JSON document without breaking it:
@@ -87,7 +130,17 @@ func Wrap(source, content string) string {
 // Returns the input unchanged when wrapping is disabled or the payload is not
 // valid JSON.
 func WrapJSON(source string, raw json.RawMessage) json.RawMessage {
-	if !enabled || len(raw) == 0 {
+	if !enabled {
+		return raw
+	}
+	return WrapJSONWith(source, raw, Options{Notice: true})
+}
+
+// WrapJSONWith is WrapJSON whatever the process-wide switch says. Without
+// opts.Notice the marker carries no notice; opts.Annotation, when set, is
+// its "annotation". Returns raw unchanged when it is not valid JSON.
+func WrapJSONWith(source string, raw json.RawMessage, opts Options) json.RawMessage {
+	if len(raw) == 0 {
 		return raw
 	}
 	if source == "" {
@@ -100,6 +153,7 @@ func WrapJSON(source string, raw json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(cleaned, &tree); err != nil {
 		return raw
 	}
+	mark := marker(source, findings, opts)
 	obj, ok := tree.(map[string]any)
 	if !ok {
 		// A non-object root — an array, typically a list response — has nowhere
@@ -109,7 +163,7 @@ func WrapJSON(source string, raw json.RawMessage) json.RawMessage {
 		// document as a JSON *string*, changing its type and forcing consumers
 		// to double-decode.
 		envelope := map[string]any{
-			"externalContent": marker(source, findings),
+			"externalContent": mark,
 			"content":         tree,
 		}
 		out, err := json.Marshal(envelope)
@@ -119,7 +173,7 @@ func WrapJSON(source string, raw json.RawMessage) json.RawMessage {
 		return out
 	}
 	if _, exists := obj["externalContent"]; !exists {
-		obj["externalContent"] = marker(source, findings)
+		obj["externalContent"] = mark
 	}
 
 	out, err := json.Marshal(obj)
@@ -141,13 +195,19 @@ func Neutralize(content string) string {
 }
 
 // marker is the provenance object stamped onto wrapped output.
-func marker(source string, findings []contentsafety.Finding) map[string]any {
-	return map[string]any{
+func marker(source string, findings []contentsafety.Finding, opts Options) map[string]any {
+	m := map[string]any{
 		"untrusted":   true,
 		"source":      source,
-		"notice":      securityNotice,
 		"neutralized": len(findings),
 	}
+	if opts.Notice {
+		m["notice"] = securityNotice
+	}
+	if a := annotationLine(opts.Annotation); a != "" {
+		m["annotation"] = a
+	}
+	return m
 }
 
 func newNonce() string {
