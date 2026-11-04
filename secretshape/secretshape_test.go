@@ -77,3 +77,39 @@ func TestRedact_afterJSONEscape(t *testing.T) {
 		t.Errorf("bearer after escape: got %s (%d)", out, n)
 	}
 }
+
+// Every shape has a hint: a sample of each matches its shape and MayContain.
+func TestMayContain_everyShape(t *testing.T) {
+	samples := []string{
+		"sk-" + strings.Repeat("a", 40),
+		"sk_live_" + strings.Repeat("c", 24),
+		"ghp_" + strings.Repeat("d", 36),
+		"github_pat_" + strings.Repeat("e", 30),
+		"glpat-" + strings.Repeat("f", 20),
+		"xoxb-" + strings.Repeat("1", 12),
+		"AKIA" + strings.Repeat("Q", 16),
+		"AIza" + strings.Repeat("g", 35),
+		"ya29." + strings.Repeat("h", 30),
+		"infrt-" + strings.Repeat("i", 20),
+		"-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----",
+	}
+	if len(samples) != len(Shapes) {
+		t.Fatalf("%d samples for %d shapes: add a sample (and a hint) for the new shape", len(samples), len(Shapes))
+	}
+	for i, re := range Shapes {
+		if !re.MatchString(samples[i]) {
+			t.Errorf("sample %d %q does not match its shape %s", i, samples[i], re)
+		}
+		if !MayContain([]byte(samples[i])) {
+			t.Errorf("shape %s: MayContain misses %q", re, samples[i])
+		}
+	}
+	for _, v := range []string{"Authorization: Bearer " + strings.Repeat("t", 32), "AUTHORIZATION=token " + strings.Repeat("t", 32)} {
+		if Bearer.MatchString(v) && !MayContain([]byte(v)) {
+			t.Errorf("bearer: MayContain misses %q", v)
+		}
+	}
+	if MayContain([]byte(`{"level":"info","component":"api","path":"/api/v1/tasks","status":200}`)) {
+		t.Error("ordinary line hinted")
+	}
+}

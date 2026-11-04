@@ -59,7 +59,8 @@ const AuditFilename = "audit.txt"
 const auditRotateEvery = time.Hour
 
 // Root is the global logger. Set by Init(), defaults to stderr.
-var Root = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"}).
+// Every line it writes passes Redact (see redact.go).
+var Root = zerolog.New(RedactWriter(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})).
 	With().Timestamp().Logger().Level(zerolog.InfoLevel)
 
 var tuiHandler io.Writer
@@ -105,7 +106,7 @@ func Init(cfg Config) error {
 	}
 
 	zerolog.TimeFieldFormat = time.RFC3339Nano
-	Root = zerolog.New(zerolog.MultiLevelWriter(writers...)).
+	Root = zerolog.New(RedactWriter(zerolog.MultiLevelWriter(writers...))).
 		With().Timestamp().Logger().
 		Level(cfg.Level)
 
@@ -117,7 +118,7 @@ func Init(cfg Config) error {
 			MaxAge:   cfg.MaxAge,
 			Compress: cfg.Compress,
 		}
-		l := zerolog.New(zerolog.MultiLevelWriter(append(writers, auditFile)...)).
+		l := zerolog.New(RedactWriter(zerolog.MultiLevelWriter(append(writers, auditFile)...))).
 			With().Timestamp().Logger().
 			Level(zerolog.InfoLevel)
 		auditRoot = &l

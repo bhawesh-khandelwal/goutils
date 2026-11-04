@@ -10,6 +10,7 @@
 package secretshape
 
 import (
+	"bytes"
 	"regexp"
 
 	"github.com/inference-sh/goutils/internal/escmask"
@@ -35,6 +36,51 @@ var Shapes = []*regexp.Regexp{
 
 // Bearer is a dumped Authorization header. The scheme stays, the token goes.
 var Bearer = regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=-]{16,}`)
+
+// hints are literals at least one of which every Shape and Bearer match
+// contains, for MayContain. A shape added to Shapes adds its prefix here
+// (TestMayContain_everyShape fails until it does).
+var hints = [][]byte{
+	[]byte("sk-"), []byte("sk_"), []byte("rk_"),
+	[]byte("ghp_"), []byte("gho_"), []byte("ghu_"), []byte("ghs_"), []byte("ghr_"),
+	[]byte("github_pat_"), []byte("glpat-"), []byte("xox"),
+	[]byte("AKIA"), []byte("AIza"), []byte("ya29."), []byte("infrt-"),
+	[]byte("PRIVATE KEY-----"),
+	[]byte("uthorization"), []byte("UTHORIZATION"),
+}
+
+// MayContain reports whether text could hold a match for Redact: false means
+// Redact would leave it as is, so a hot path (every log line) can skip the
+// regular expressions. It may report true for text with no match.
+func MayContain(text []byte) bool {
+	for i, c := range text {
+		if !hintStart[c] {
+			continue
+		}
+		for _, h := range hintsByStart[c] {
+			if bytes.HasPrefix(text[i:], h) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hintStart marks the first byte of every hint.
+var hintStart = func() (t [256]bool) {
+	for _, h := range hints {
+		t[h[0]] = true
+	}
+	return t
+}()
+
+// hintsByStart are the hints by their first byte.
+var hintsByStart = func() (t [256][][]byte) {
+	for _, h := range hints {
+		t[h[0]] = append(t[h[0]], h)
+	}
+	return t
+}()
 
 // Redact replaces every match in text with placeholder (Placeholder when
 // empty) and reports how many it replaced. Text with no match is returned
