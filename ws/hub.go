@@ -176,28 +176,61 @@ const (
 	ConnectionRemote
 )
 
-// GetConnectionState returns detailed information about a connection's state
+// locate resolves where a connection is and who holds it. With a connection
+// store the lease is authoritative: a connection that reconnected to another
+// instance is reported ConnectionRemote even while a stale local socket lingers
+// here, so a message is forwarded to the holder rather than written to the dead
+// socket and silently lost. A store error is returned, not swallowed: the local
+// socket may be the stale one, so delivery must not fall back to it blindly;
+// the caller decides. The returned instance is meaningful only for
+// ConnectionRemote.
+func (h *Hub) locate(id string) (ConnectionState, string, error) {
+	_, local := h.connections.Load(id)
+	if h.connectionStore == nil {
+		if local {
+			return ConnectionLocal, h.instanceID, nil
+		}
+		return ConnectionNotFound, "", nil
+	}
+
+	holder, err := h.connectionStore.Find(id)
+	if err != nil {
+		return ConnectionNotFound, "", fmt.Errorf("resolve connection %s: %w", id, err)
+	}
+
+	switch {
+	case holder == nil:
+		// No lease. A local socket whose lease lapsed is still served.
+		if local {
+			return ConnectionLocal, h.instanceID, nil
+		}
+		return ConnectionNotFound, "", nil
+	case *holder == h.instanceID:
+		if local {
+			return ConnectionLocal, h.instanceID, nil
+		}
+		// The lease is this instance's but this hub has no socket for it: a
+		// sibling hub on the same instance (engines and remotes share one) holds
+		// it. Forward to the instance channel, where that hub delivers it.
+		return ConnectionRemote, h.instanceID, nil
+	default:
+		return ConnectionRemote, *holder, nil
+	}
+}
+
+// GetConnectionState returns detailed information about a connection's state.
+// Presence is best-effort: when the store is unreachable it reports a local
+// socket if one exists rather than fail, since a stale read here is harmless.
+// Delivery does not share that leniency; see SendToConnection.
 func (h *Hub) GetConnectionState(id string) ConnectionState {
-	// Check local first
-	if _, ok := h.connections.Load(id); ok {
-		return ConnectionLocal
-	}
-
-	// If we have pubsub, check other instances
-	if h.connectionStore != nil {
-		instanceID, err := h.connectionStore.Find(id)
-		if err != nil {
-			logging.Error("ws").Msgf("Failed to find connection: %v", err)
-			return ConnectionNotFound
+	state, _, err := h.locate(id)
+	if err != nil {
+		if _, ok := h.connections.Load(id); ok {
+			return ConnectionLocal
 		}
-		if instanceID != nil {
-			return ConnectionRemote
-		}
-	} else {
-		logging.Info("ws").Msgf("No pubsub found, only checking local connections")
+		return ConnectionNotFound
 	}
-
-	return ConnectionNotFound
+	return state
 }
 
 // GetConnection retrieves a server connection by ID
@@ -264,23 +297,27 @@ func (h *Hub) CanSendMessage(id string) bool {
 	return false
 }
 
-// SendToConnection sends a message to a specific connection
+// SendToConnection sends a message to a specific connection, local or held by
+// another instance. locate consults the lease, so a connection that moved is
+// forwarded to its new instance rather than delivered to a stale local socket.
+// A store error fails the send rather than falling back to a possibly stale
+// local socket, so a message is never silently delivered to a dead peer while
+// the lease is unknown.
 func (h *Hub) SendToConnection(id string, msgType string, data any) error {
-	state := h.GetConnectionState(id)
+	state, instance, err := h.locate(id)
+	if err != nil {
+		return err
+	}
 
 	switch state {
 	case ConnectionLocal:
-		if conn, ok := h.GetConnection(id); ok {
-			return conn.Send(msgType, data)
+		if conn, ok := h.connections.Load(id); ok {
+			if c, ok := conn.(*ServerConnection); ok {
+				return c.Send(msgType, data)
+			}
 		}
+		return fmt.Errorf("connection not found: %s", id)
 	case ConnectionRemote:
-		// If not local and we have pubsub, try to find it on other instances
-		instanceID, err := h.connectionStore.Find(id)
-		if err != nil || instanceID == nil {
-			return fmt.Errorf("failed to find connection: %w", err)
-		}
-
-		// Marshal the data
 		var dataBytes []byte
 		if data != nil {
 			var err error
@@ -289,17 +326,13 @@ func (h *Hub) SendToConnection(id string, msgType string, data any) error {
 				return fmt.Errorf("failed to marshal message data: %w", err)
 			}
 		}
-
-		// Forward the message to the correct instance
-		if err := h.connectionStore.SendToInstance(*instanceID, id, msgType, dataBytes); err != nil {
+		if err := h.connectionStore.SendToInstance(instance, id, msgType, dataBytes); err != nil {
 			return fmt.Errorf("failed to forward message: %w", err)
 		}
 		return nil
-	case ConnectionNotFound:
+	default:
 		return fmt.Errorf("connection not found: %s", id)
 	}
-
-	return fmt.Errorf("connection not found: %s", id)
 }
 
 // BroadcastToChannel sends a message to all connections subscribed to a channel
